@@ -164,7 +164,7 @@ class ImageColorPicker:
         
         # 文件选择按钮
         btn_padding = int(10 * self.ui_scale)
-        open_btn = ttk.Button(control_frame, text="选择BMP图像", command=self.open_image, style='Custom.TButton')
+        open_btn = ttk.Button(control_frame, text="选择图像文件", command=self.open_image, style='Custom.TButton')
         open_btn.pack(side=tk.LEFT, padx=(0, btn_padding))
         
         # 缩放控制
@@ -308,7 +308,7 @@ class ImageColorPicker:
         self.color_preview.pack_propagate(False)
         
         # 状态标签
-        self.status_label = ttk.Label(right_frame, text="请选择BMP图像文件", 
+        self.status_label = ttk.Label(right_frame, text="请选择图像文件", 
                                      foreground="gray", font=self.fonts['small'])
         self.status_label.pack(anchor=tk.W, pady=(int(20 * self.ui_scale), 0))
         
@@ -320,8 +320,18 @@ class ImageColorPicker:
     def open_image(self):
         """打开图像文件"""
         file_path = filedialog.askopenfilename(
-            title="选择BMP图像文件",
-            filetypes=[("BMP files", "*.bmp"), ("All files", "*.*")]
+            title="选择图像文件",
+            filetypes=[
+                ("所有支持的图像", "*.bmp;*.jpg;*.jpeg;*.png;*.gif;*.tiff;*.tif;*.webp;*.ico"),
+                ("BMP files", "*.bmp"),
+                ("JPEG files", "*.jpg;*.jpeg"),
+                ("PNG files", "*.png"),
+                ("GIF files", "*.gif"),
+                ("TIFF files", "*.tiff;*.tif"),
+                ("WebP files", "*.webp"),
+                ("Icon files", "*.ico"),
+                ("All files", "*.*")
+            ]
         )
         
         if file_path:
@@ -329,37 +339,111 @@ class ImageColorPicker:
                 # 打开并验证图像
                 image = Image.open(file_path)
                 
-                # 检查是否为BMP格式
-                if not file_path.lower().endswith('.bmp'):
-                    messagebox.showwarning("警告", "建议使用BMP格式的图像文件。")
+                # 检查图像格式并给出提示
+                format_name = image.format or "Unknown"
+                self.show_format_info(file_path, format_name)
                 
-                # 检查分辨率（可选警告）
+                # 获取图像尺寸
                 width, height = image.size
-                if width != 1280 or height != 1024:
-                    response = messagebox.askyesno(
-                        "分辨率确认", 
-                        f"图像分辨率为 {width}x{height}，不是期望的 1280x1024。\n是否继续？"
-                    )
-                    if not response:
-                        return
                 
-                self.image = image
+                # 检查图像大小，如果太大则询问是否需要预处理
+                max_display_size = 4096  # 最大显示尺寸
+                if width > max_display_size or height > max_display_size:
+                    response = messagebox.askyesno(
+                        "大图像处理", 
+                        f"图像尺寸较大 ({width}x{height})，这可能影响性能。\n"
+                        f"建议的最大显示尺寸为 {max_display_size}x{max_display_size}。\n\n"
+                        "是否要创建预览版本以提高性能？\n"
+                        "（原始图像的取色精度不会受影响）"
+                    )
+                    if response:
+                        # 创建缩放版本用于显示
+                        display_image = self.create_display_version(image, max_display_size)
+                        self.image = image  # 保存原始图像用于精确取色
+                        self.display_image_obj = display_image  # 用于显示的图像
+                    else:
+                        self.image = image
+                        self.display_image_obj = image
+                else:
+                    self.image = image
+                    self.display_image_obj = image
+                
+                # 转换为RGB模式以确保兼容性
+                if self.image.mode not in ('RGB', 'RGBA'):
+                    try:
+                        self.image = self.image.convert('RGB')
+                        if hasattr(self, 'display_image_obj') and self.display_image_obj != self.image:
+                            self.display_image_obj = self.display_image_obj.convert('RGB')
+                    except Exception as e:
+                        messagebox.showwarning("转换警告", f"图像模式转换时出现问题: {str(e)}")
+                
                 self.current_image_file = os.path.basename(file_path)
                 self.zoom_factor = 1.0
                 self.zoom_var.set("100%")
                 self.display_image()
-                self.status_label.config(text=f"已加载: {os.path.basename(file_path)} ({width}x{height})")
+                
+                # 更新状态信息
+                size_info = f"{width}x{height}"
+                if hasattr(self, 'display_image_obj') and self.display_image_obj != self.image:
+                    display_width, display_height = self.display_image_obj.size
+                    size_info += f" (显示: {display_width}x{display_height})"
+                
+                status_text = f"已加载: {os.path.basename(file_path)} ({size_info}) - {format_name}格式"
+                self.status_label.config(text=status_text)
                 
             except Exception as e:
-                messagebox.showerror("错误", f"无法打开图像文件:\n{str(e)}")
+                messagebox.showerror("错误", f"无法打开图像文件:\n{str(e)}\n\n支持的格式: BMP, JPEG, PNG, GIF, TIFF, WebP, ICO")
+    
+    def create_display_version(self, image, max_size):
+        """创建用于显示的缩放版本"""
+        width, height = image.size
+        
+        # 计算缩放比例
+        scale = min(max_size / width, max_size / height)
+        
+        if scale < 1.0:
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            # 使用高质量的缩放算法
+            display_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            return display_image
+        
+        return image
+    
+    def show_format_info(self, file_path, format_name):
+        """显示图像格式信息"""
+        format_tips = {
+            'BMP': '位图格式，无压缩，适合精确取色',
+            'JPEG': 'JPEG格式，有损压缩，颜色可能有轻微变化',
+            'PNG': 'PNG格式，无损压缩，支持透明度',
+            'GIF': 'GIF格式，调色板模式，颜色数量有限',
+            'TIFF': 'TIFF格式，高质量，支持多种色彩模式',
+            'WEBP': 'WebP格式，现代压缩格式',
+            'ICO': '图标格式，通常尺寸较小'
+        }
+        
+        tip = format_tips.get(format_name, '未知格式')
+        
+        # 如果不是BMP格式，显示提示信息
+        if format_name != 'BMP':
+            messagebox.showinfo(
+                "格式信息", 
+                f"检测到 {format_name} 格式图像\n\n"
+                f"说明: {tip}\n\n"
+                "程序已自动处理格式兼容性。"
+            )
     
     def display_image(self):
         """显示图像到画布上"""
-        if self.image is None:
+        if not hasattr(self, 'display_image_obj') or self.display_image_obj is None:
             return
         
+        # 使用显示图像对象进行显示
+        display_img = self.display_image_obj
+        
         # 计算缩放后的尺寸
-        original_width, original_height = self.image.size
+        original_width, original_height = display_img.size
         new_width = int(original_width * self.zoom_factor)
         new_height = int(original_height * self.zoom_factor)
         
@@ -376,9 +460,9 @@ class ImageColorPicker:
         
         # 缩放图像
         if self.zoom_factor != 1.0:
-            resized_image = self.image.resize((new_width, new_height), resample_method)
+            resized_image = display_img.resize((new_width, new_height), resample_method)
         else:
-            resized_image = self.image
+            resized_image = display_img
         
         # 转换为tkinter可用的格式
         self.photo = ImageTk.PhotoImage(resized_image)
@@ -415,14 +499,31 @@ class ImageColorPicker:
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
         
-        # 转换为原始图像坐标
-        original_x = int(canvas_x / self.zoom_factor)
-        original_y = int(canvas_y / self.zoom_factor)
+        # 如果使用了显示版本的图像，需要转换坐标
+        if hasattr(self, 'display_image_obj') and self.display_image_obj != self.image:
+            # 计算从显示图像到原始图像的坐标映射
+            display_width, display_height = self.display_image_obj.size
+            original_width, original_height = self.image.size
+            
+            # 考虑缩放因子
+            display_x = canvas_x / self.zoom_factor
+            display_y = canvas_y / self.zoom_factor
+            
+            # 转换到原始图像坐标
+            scale_x = original_width / display_width
+            scale_y = original_height / display_height
+            
+            original_x = int(display_x * scale_x)
+            original_y = int(display_y * scale_y)
+        else:
+            # 直接转换为原始图像坐标
+            original_x = int(canvas_x / self.zoom_factor)
+            original_y = int(canvas_y / self.zoom_factor)
         
-        # 检查坐标是否在图像范围内
+        # 检查坐标是否在原始图像范围内
         width, height = self.image.size
         if 0 <= original_x < width and 0 <= original_y < height:
-            # 获取像素颜色
+            # 从原始图像获取像素颜色
             pixel_color = self.image.getpixel((original_x, original_y))
             
             # 处理不同的图像模式
@@ -430,14 +531,27 @@ class ImageColorPicker:
                 r, g, b = pixel_color
             elif self.image.mode == 'RGBA':
                 r, g, b, a = pixel_color
+                # 处理透明度，将其与白色背景混合
+                alpha = a / 255.0
+                r = int(r * alpha + 255 * (1 - alpha))
+                g = int(g * alpha + 255 * (1 - alpha))
+                b = int(b * alpha + 255 * (1 - alpha))
             elif self.image.mode == 'L':  # 灰度图像
                 r = g = b = pixel_color
-            else:
-                # 转换到RGB模式
+            elif self.image.mode == 'P':  # 调色板模式（如GIF）
+                # 转换为RGB模式获取颜色
                 rgb_image = self.image.convert('RGB')
                 r, g, b = rgb_image.getpixel((original_x, original_y))
+            else:
+                # 其他模式，尝试转换到RGB
+                try:
+                    rgb_image = self.image.convert('RGB')
+                    r, g, b = rgb_image.getpixel((original_x, original_y))
+                except Exception as e:
+                    messagebox.showerror("错误", f"无法获取该位置的颜色: {str(e)}")
+                    return
             
-            # 更新显示
+            # 更新显示（使用原始坐标）
             self.update_color_info(original_x, original_y, r, g, b)
     
     def update_color_info(self, x, y, r, g, b):
