@@ -14,7 +14,7 @@ Features:
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageGrab
 import colorsys
 import os
 import json
@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 import sys
 import platform
+import threading
+import time
 
 class ImageColorPicker:
     def __init__(self, root):
@@ -53,6 +55,12 @@ class ImageColorPicker:
         
         # 颜色记录列表
         self.color_records = []
+        
+        # 悬浮窗相关变量
+        self.floating_window = None
+        self.is_floating_mode = False
+        self.screen_capture = None
+        self.floating_timer = None
         
         # 配置样式
         self.setup_styles()
@@ -186,6 +194,14 @@ class ImageColorPicker:
         
         export_btn = ttk.Button(control_frame, text="导出记录", command=self.export_records, style='Custom.TButton')
         export_btn.pack(side=tk.LEFT)
+        
+        # 添加另一个分隔符
+        separator2 = ttk.Separator(control_frame, orient=tk.VERTICAL)
+        separator2.pack(side=tk.LEFT, fill=tk.Y, padx=separator_padding)
+        
+        # 悬浮窗模式按钮
+        self.floating_btn = ttk.Button(control_frame, text="启动悬浮窗", command=self.toggle_floating_mode, style='Custom.TButton')
+        self.floating_btn.pack(side=tk.LEFT)
         
         # 主内容区域
         content_frame = ttk.Frame(main_frame)
@@ -725,6 +741,268 @@ class ImageColorPicker:
                 f.write(f"HSV: ({record['hsv']['h']}°, {record['hsv']['s']}%, {record['hsv']['v']}%)\n")
                 f.write(f"十六进制: {record['hex']}\n")
                 f.write("-" * 30 + "\n\n")
+    
+    def toggle_floating_mode(self):
+        """切换悬浮窗模式"""
+        if not self.is_floating_mode:
+            self.start_floating_mode()
+        else:
+            self.stop_floating_mode()
+    
+    def start_floating_mode(self):
+        """启动悬浮窗模式"""
+        try:
+            self.is_floating_mode = True
+            self.floating_btn.config(text="停止悬浮窗")
+            
+            # 创建悬浮窗
+            self.create_floating_window()
+            
+            # 隐藏主窗口（可选）
+            self.root.withdraw()
+            
+            # 开始屏幕捕获循环
+            self.start_screen_capture()
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"启动悬浮窗失败:\n{str(e)}")
+            self.stop_floating_mode()
+    
+    def stop_floating_mode(self):
+        """停止悬浮窗模式"""
+        self.is_floating_mode = False
+        self.floating_btn.config(text="启动悬浮窗")
+        
+        # 停止定时器
+        if self.floating_timer:
+            self.root.after_cancel(self.floating_timer)
+            self.floating_timer = None
+        
+        # 关闭悬浮窗
+        if self.floating_window:
+            self.floating_window.destroy()
+            self.floating_window = None
+        
+        # 显示主窗口
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+    
+    def create_floating_window(self):
+        """创建悬浮窗"""
+        self.floating_window = tk.Toplevel(self.root)
+        self.floating_window.title("屏幕取色器")
+        
+        # 窗口设置
+        window_width = int(280 * self.ui_scale)
+        window_height = int(200 * self.ui_scale)
+        self.floating_window.geometry(f"{window_width}x{window_height}")
+        
+        # 窗口属性设置
+        self.floating_window.attributes('-topmost', True)  # 置顶
+        self.floating_window.attributes('-alpha', 0.9)     # 半透明
+        self.floating_window.resizable(False, False)
+        
+        # 设置窗口位置（屏幕右上角）
+        screen_width = self.floating_window.winfo_screenwidth()
+        x = screen_width - window_width - 50
+        y = 50
+        self.floating_window.geometry(f"+{x}+{y}")
+        
+        # 窗口关闭事件
+        self.floating_window.protocol("WM_DELETE_WINDOW", self.stop_floating_mode)
+        
+        self.setup_floating_ui()
+    
+    def setup_floating_ui(self):
+        """设置悬浮窗界面"""
+        # 主框架
+        padding = int(10 * self.ui_scale)
+        main_frame = ttk.Frame(self.floating_window, padding=padding)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 标题
+        title_label = ttk.Label(main_frame, text="屏幕取色器", font=self.fonts['title'])
+        title_label.pack(pady=(0, int(10 * self.ui_scale)))
+        
+        # 鼠标位置显示
+        self.mouse_pos_label = ttk.Label(main_frame, text="位置: (0, 0)", font=self.fonts['default'])
+        self.mouse_pos_label.pack(anchor=tk.W)
+        
+        # 颜色信息框架
+        color_frame = ttk.LabelFrame(main_frame, text="颜色信息", padding=int(5 * self.ui_scale))
+        color_frame.pack(fill=tk.BOTH, expand=True, pady=(int(5 * self.ui_scale), 0))
+        
+        # RGB显示
+        self.floating_rgb_label = ttk.Label(color_frame, text="RGB: (0, 0, 0)", font=self.fonts['default'])
+        self.floating_rgb_label.pack(anchor=tk.W)
+        
+        # 十六进制显示
+        self.floating_hex_label = ttk.Label(color_frame, text="HEX: #000000", font=self.fonts['default'])
+        self.floating_hex_label.pack(anchor=tk.W)
+        
+        # 颜色预览
+        preview_size = int(40 * self.ui_scale)
+        self.floating_color_preview = tk.Frame(color_frame, width=preview_size, height=preview_size, 
+                                              bg="black", relief=tk.SUNKEN, bd=2)
+        self.floating_color_preview.pack(pady=(int(5 * self.ui_scale), 0))
+        self.floating_color_preview.pack_propagate(False)
+        
+        # 按钮框架
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(int(10 * self.ui_scale), 0))
+        
+        # 取色按钮
+        capture_btn = ttk.Button(button_frame, text="取色 (Ctrl+Click)", 
+                                command=self.manual_capture_color, style='Custom.TButton')
+        capture_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # 关闭按钮
+        close_btn = ttk.Button(button_frame, text="关闭", 
+                              command=self.stop_floating_mode, style='Custom.TButton')
+        close_btn.pack(side=tk.RIGHT, padx=(int(5 * self.ui_scale), 0))
+        
+        # 绑定全局热键
+        self.floating_window.bind('<Control-Button-1>', self.on_floating_click)
+        self.floating_window.focus_set()
+    
+    def start_screen_capture(self):
+        """开始屏幕捕获循环"""
+        if self.is_floating_mode and self.floating_window:
+            try:
+                # 获取鼠标位置
+                x = self.floating_window.winfo_pointerx()
+                y = self.floating_window.winfo_pointery()
+                
+                # 更新鼠标位置显示
+                if hasattr(self, 'mouse_pos_label'):
+                    self.mouse_pos_label.config(text=f"位置: ({x}, {y})")
+                
+                # 捕获鼠标位置的颜色
+                try:
+                    # 使用PIL的ImageGrab捕获屏幕
+                    screenshot = ImageGrab.grab()
+                    
+                    # 确保坐标在屏幕范围内
+                    if 0 <= x < screenshot.width and 0 <= y < screenshot.height:
+                        # 获取像素颜色
+                        pixel_color = screenshot.getpixel((x, y))
+                        
+                        if len(pixel_color) >= 3:
+                            r, g, b = pixel_color[:3]
+                            
+                            # 更新悬浮窗显示
+                            self.update_floating_display(r, g, b)
+                    
+                except Exception as e:
+                    print(f"屏幕捕获错误: {e}")
+                
+                # 继续捕获（每50毫秒更新一次）
+                self.floating_timer = self.root.after(50, self.start_screen_capture)
+                
+            except Exception as e:
+                print(f"捕获循环错误: {e}")
+                self.stop_floating_mode()
+    
+    def update_floating_display(self, r, g, b):
+        """更新悬浮窗颜色显示"""
+        try:
+            # 更新RGB显示
+            if hasattr(self, 'floating_rgb_label'):
+                self.floating_rgb_label.config(text=f"RGB: ({r}, {g}, {b})")
+            
+            # 更新十六进制显示
+            hex_color = f"#{r:02X}{g:02X}{b:02X}"
+            if hasattr(self, 'floating_hex_label'):
+                self.floating_hex_label.config(text=f"HEX: {hex_color}")
+            
+            # 更新颜色预览
+            if hasattr(self, 'floating_color_preview'):
+                self.floating_color_preview.config(bg=hex_color)
+            
+        except Exception as e:
+            print(f"更新显示错误: {e}")
+    
+    def manual_capture_color(self):
+        """手动捕获当前鼠标位置的颜色并记录"""
+        try:
+            # 获取当前鼠标位置
+            x = self.floating_window.winfo_pointerx()
+            y = self.floating_window.winfo_pointery()
+            
+            # 捕获屏幕
+            screenshot = ImageGrab.grab()
+            
+            # 确保坐标在屏幕范围内
+            if 0 <= x < screenshot.width and 0 <= y < screenshot.height:
+                # 获取像素颜色
+                pixel_color = screenshot.getpixel((x, y))
+                
+                if len(pixel_color) >= 3:
+                    r, g, b = pixel_color[:3]
+                    
+                    # 计算HSV值
+                    h, s, v = colorsys.rgb_to_hsv(r/255.0, g/255.0, b/255.0)
+                    h_deg = int(h * 360)
+                    s_percent = int(s * 100)
+                    v_percent = int(v * 100)
+                    
+                    # 十六进制值
+                    hex_color = f"#{r:02X}{g:02X}{b:02X}"
+                    
+                    # 添加到颜色记录（标记为屏幕取色）
+                    record = {
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'sequence': len(self.color_records) + 1,
+                        'position': {'x': x, 'y': y},
+                        'rgb': {'r': r, 'g': g, 'b': b},
+                        'hsv': {'h': h_deg, 's': s_percent, 'v': v_percent},
+                        'hex': hex_color,
+                        'image_file': 'Screen Capture'  # 标记为屏幕截图
+                    }
+                    
+                    self.color_records.append(record)
+                    self.update_record_count()
+                    
+                    # 显示成功提示
+                    self.show_capture_notification(hex_color)
+                    
+        except Exception as e:
+            messagebox.showerror("错误", f"取色失败:\n{str(e)}")
+    
+    def on_floating_click(self, event):
+        """处理悬浮窗的Ctrl+点击事件"""
+        self.manual_capture_color()
+    
+    def show_capture_notification(self, hex_color):
+        """显示取色成功通知"""
+        try:
+            # 创建临时通知窗口
+            notification = tk.Toplevel(self.floating_window)
+            notification.title("取色成功")
+            
+            # 窗口设置
+            notification.geometry("200x80")
+            notification.attributes('-topmost', True)
+            notification.attributes('-alpha', 0.8)
+            notification.resizable(False, False)
+            
+            # 设置位置（悬浮窗下方）
+            if self.floating_window:
+                x = self.floating_window.winfo_x()
+                y = self.floating_window.winfo_y() + self.floating_window.winfo_height() + 10
+                notification.geometry(f"+{x}+{y}")
+            
+            # 内容
+            label = ttk.Label(notification, text=f"已记录颜色\n{hex_color}", 
+                             font=self.fonts['default'], anchor=tk.CENTER)
+            label.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+            
+            # 自动关闭
+            notification.after(2000, notification.destroy)
+            
+        except Exception as e:
+            print(f"通知显示错误: {e}")
 
 def main():
     """主函数"""
